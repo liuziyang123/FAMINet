@@ -1,5 +1,5 @@
 # FAMINet
-Implementation of our paper entitiled ``FAMINet: Learning Real-time Semi-supervised Video Object Segmentation with Steepest Optimized Optical Flow'' submitted to TIM, under review. This code is mainly based on 
+Implementation of our paper entitiled ``FAMINet: Learning Real-time Semi-supervised Video Object Segmentation with Steepest Optimized Optical Flow'' submitted to TIM, under review. This code is mainly based on [frtm-vos](https://github.com/andr345/frtm-vos). Thanks for their provided codes.
 ## 1. Get Started
 ### a. Test environment:
 ```shell script
