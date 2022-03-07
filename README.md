@@ -34,7 +34,7 @@ We provided our model FAMINet-2F and FAMINet-3F for reference:
 | Name            | Backbone  |  Weights  |
 |-----------------|:---------:|:---------:|
 | FAMINet-2F, FAMINet-3F  | ResNet18  |[Download](https://pan.baidu.com/s/1v-rXfuwTNJOl7NiMye8pXA) | #0bPx
-### 4. Train
+## 4. Train
 ```shell script
 python train.py name --ftext resnet18 --dset all --dev gpu_id
 ```
