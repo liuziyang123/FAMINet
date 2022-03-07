@@ -183,7 +183,7 @@ class SegNetwork(nn.Module):
         assert ft_channels is not None
         self.ft_channels = ft_channels
 
-        self.TSE = nn.ModuleDict()              # 用字典的形式注册参数
+        self.TSE = nn.ModuleDict() 
         self.RRB1 = nn.ModuleDict()
         self.CAB = nn.ModuleDict()
         self.RRB2 = nn.ModuleDict()
