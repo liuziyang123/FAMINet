@@ -33,7 +33,7 @@ python evaluate.py --model model_path --fast --dset dv2017val   # DAVIS 2017
 We provided our model FAMINet-2F and FAMINet-3F for reference:
 | Name            | Backbone  |  Weights  |
 |-----------------|:---------:|:---------:|
-| FAMINet-2F, FAMINet-3F  | ResNet18  |[Download](https://pan.baidu.com/s/1v-rXfuwTNJOl7NiMye8pXA) | #0bPx
+| FAMINet-2F, FAMINet-3F  | ResNet18  |[Download](https://drive.google.com/drive/folders/1WhIYaXHx8zhZQ4Nat1_HbM8mQd8z5UZS?usp=sharing) | #0bPx
 ## 4. Train
 ```shell script
 python train.py name --ftext resnet18 --dset all --dev gpu_id
