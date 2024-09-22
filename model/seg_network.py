@@ -2,15 +2,12 @@ import torch
 from torch import nn as nn
 from torch.nn import functional as F
 from lib.utils import conv, relu, interpolate, adaptive_cat
-from lib.selftune import SpatialTransformer
-from collections import OrderedDict
-from feature_extractor import ResnetFeatureExtractor
-
 from torchvision.models import resnet18, resnet34, resnet50, resnet101
 from lib.utils import get_out_channels
 
-from .stgru import stgru, gru, davis_loss, stgru_raw, stgru_lzy, gru_vos
+from .stgru import stgru
 import cv2
+from .raft import RAFT
 
 
 Count = 0
@@ -124,6 +121,26 @@ class Upsampler(nn.Module):
         return x
 
 
+class BackwardCompatibleUpsampler(nn.Module):
+    """ Upsampler with bicubic interpolation that works with Pytorch 1.0.1 """
+
+    def __init__(self, in_channels=64):
+        super().__init__()
+
+        self.conv1 = conv(in_channels, in_channels // 2, 3)
+        self.up1 = PyrUpBicubic2d(in_channels)
+        self.conv2 = conv(in_channels // 2, 1, 3)
+        self.up2 = PyrUpBicubic2d(in_channels // 2)
+
+    def forward(self, x, image_size):
+        x = self.up1(x)
+        x = F.relu(self.conv1(x))
+        x = self.up2(x)
+        x = F.interpolate(x, image_size[-2:], mode='bilinear', align_corners=False)
+        x = self.conv2(x)
+        return x
+
+
 class PyrUpBicubic2d(nn.Module):
 
     def __init__(self, channels):
@@ -202,11 +219,19 @@ class SegNetwork(nn.Module):
         #self.project = Upsampler(out_channels)
 
         self.gru = stgru()
-        # self.gru = gru()
-        # self.gru = gru_vos()
-        # self.gru = stgru_raw()
+        self.flow = RAFT()
 
-    def forward(self, scores, features, features_flow, images, image_size, flows, padder=None, mask1=None, mask2=None, current_output=None):
+    def forward(self, scores, features, features_flow, images, image_size, flows=None, padder=None, mask1=None, mask2=None, current_output=None):
+
+        if flows == None:
+            flows = []
+            for i in range(1, len(images)):
+                fmap1 = features_flow[i]['layer3']
+                fmap2 = features_flow[i - 1]['layer3']
+                if padder == None:
+                    flows.append(self.flow(fmap1, fmap2, images[-1] / 255.))
+                else:
+                    flows.append(padder.unpad(self.flow(fmap1, fmap2, images[-1] / 255.)))
 
         num_targets = scores[0].shape[0]
         num_fmaps = features[0][next(iter(self.ft_channels))].shape[0]

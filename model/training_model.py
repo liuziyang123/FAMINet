@@ -2,13 +2,12 @@ import torch
 import torch.nn as nn
 
 from lib.utils import AverageMeter, interpolate
-from lib.selftune import SpatialTransformer
+from model.tracker import SpatialTransformer
 from lib.training_datasets import SampleSpec
 from .augmenter import ImageAugmenter
 from .discriminator import Discriminator
 
 import torch.nn.functional as F
-from .tracker import davis_loss
 
 
 def calculate_psnr(img1, img2):
@@ -57,7 +56,6 @@ class TrainerModel(nn.Module):
         self.feature_extractor = feature_extractor
         self.feature_extractor_flow = feature_extractor_flow
         self.refiner = seg_network
-        # self.flownet = flownet()
         self.tmodel_cache = tmodel_cache
         self.device = device
 
@@ -82,7 +80,6 @@ class TrainerModel(nn.Module):
 
     def state_dict(self):
         return self.refiner.state_dict(prefix="refiner.")
-        # return self.refiner.state_dict()
 
     def intersection_over_union(self, pred, gt):
 
@@ -121,7 +118,6 @@ class TrainerModel(nn.Module):
         loss.backward()
 
         seglosses.update(loss.item())
-        # flowlosses.update(flowloss.item())
         iter_acc += acc.mean().cpu().numpy()
         n += 1
 
@@ -138,7 +134,6 @@ class TrainerModel(nn.Module):
         cache_hits = 0
 
         # Augment first image and extract features
-
         L = self.tmodels[0].discriminator.layer
 
         N = first_image.shape[0]  # Batch size
@@ -192,9 +187,6 @@ class TrainerModel(nn.Module):
 
         for i in range(len(y)):
             y[i] = torch.sigmoid(interpolate(y[i], image[0].shape[-2:]))
-            # y[i] = interpolate(y[i], image[0].shape[-2:])
-
-        # y = interpolate(y, image[0].shape[-2:])
 
         return y, flow
 

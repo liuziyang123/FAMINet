@@ -11,8 +11,6 @@ from .augmenter import ImageAugmenter
 from .discriminator import Discriminator
 from .seg_network import SegNetwork
 
-from .jointup import PacJointUpsample
-
 from time import time
 
 import cv2
@@ -21,22 +19,16 @@ import random
 
 from .raft import RAFT
 from lib.tensorlist import TensorList
-from line_profiler import LineProfiler
-import profile
-
-from lib.selftune import *
 
 import os
 import sys
 root_path = os.getcwd()
 sys.path.insert(0, '/data2/liuziyang/frtm-vos-master/')
 
-
 Count = 0
 dir = './results/viz/'
 def save_tensor(input):
     global Count
-    # input = (input - input.min()) / (input.max() - input.min())
     input[input<0] = 0.
     input = input / input.max()
     input = input.squeeze().cpu().numpy()
@@ -44,6 +36,113 @@ def save_tensor(input):
 
     cv2.imwrite(dir + str(Count) + '.png', heatmap)
     Count += 1
+
+
+def masks_to_bboxes(mask, fmt='c'):
+
+    """ Convert a mask tensor to one or more bounding boxes.
+    Note: This function is a bit new, make sure it does what it says.  /Andreas
+    :param mask: Tensor of masks, shape = (..., H, W)
+    :param fmt: bbox layout. 'c' => "center + size" or (x_center, y_center, width, height)
+                             't' => "top left + size" or (x_left, y_top, width, height)
+                             'v' => "vertices" or (x_left, y_top, x_right, y_bottom)
+    :return: tensor containing a batch of bounding boxes, shape = (..., 4)
+    """
+    batch_shape = mask.shape[:-2]
+    mask = mask.reshape((-1, *mask.shape[-2:]))
+    bboxes = []
+
+    H, W = mask.shape[-2:]
+    p_size = 0
+
+    for m in mask:
+        # mx = m.sum(dim=-2).nonzero()
+        # my = m.sum(dim=-1).nonzero()
+        mx = torch.nonzero(m.sum(dim=-2), as_tuple=False)
+        my = torch.nonzero(m.sum(dim=-1), as_tuple=False)
+        if (len(mx) > 0 and len(my) > 0):
+            if mx.min() - p_size > 0:
+                a = mx.min() - p_size
+            else:
+                a = 0
+            if mx.max() + p_size < W:
+                b = mx.max() + p_size
+            else:
+                b = W
+            if my.min() - p_size > 0:
+                c = my.min() - p_size
+            else:
+                c = 0
+            if my.max() + p_size < H:
+                d = my.max() + p_size
+            else:
+                d = H
+            bb = [a, c, b, d]
+        else:
+            bb = [0, 0, 0, 0]
+
+        # bb = [mx.min(), my.min(), mx.max(), my.max()] if (len(mx) > 0 and len(my) > 0) else [0, 0, 0, 0]
+        # bb = [a, c, b, d] if (len(mx) > 0 and len(my) > 0) else [0, 0, 0, 0]
+        bboxes.append(bb)
+
+    bboxes = torch.tensor(bboxes, dtype=torch.float32, device=mask.device)
+    bboxes = bboxes.reshape(batch_shape + (4,))
+
+    if fmt == 'v':
+        return bboxes
+
+    x1 = bboxes[..., :2]
+    s = bboxes[..., 2:] - x1 + 1
+
+    if fmt == 'c':
+        return torch.cat((x1 + 0.5 * s, s), dim=-1)
+    elif fmt == 't':
+        return torch.cat((x1, s), dim=-1)
+
+    raise ValueError("Undefined bounding box layout '%s'" % fmt)
+
+
+class SpatialTransformer(nn.Module):
+
+    def __init__(self, size, mode='bilinear'):
+        """
+        Instiatiate the block
+            :param size: size of input to the spatial transformer block
+            :param mode: method of interpolation for grid_sampler
+        """
+        super(SpatialTransformer, self).__init__()
+
+        # Create sampling grid
+        vectors = [torch.arange(0, s) for s in size]
+        grids = torch.meshgrid(vectors)
+        grid = torch.stack(grids) # y, x, z
+        grid = torch.unsqueeze(grid, 0)  # add batch
+        grid = grid.type(torch.FloatTensor)
+        self.register_buffer('grid', grid)
+        self.mode = mode
+
+    def forward(self, src, flow):
+        """
+        Push the src and flow through the spatial transform block
+            :param src: the original moving image
+            :param flow: the output from the U-Net
+        """
+        new_locs = self.grid + flow
+        # new_locs = self.grid[:, [1,0], ...] + flow
+        shape = flow.shape[2:]
+
+        # Need to normalize grid values to [-1, 1] for resampler
+        for i in range(len(shape)):
+            new_locs[:, i, ...] = 2*(new_locs[:, i, ...]/(shape[i]-1) - 0.5)
+
+        if len(shape) == 2:
+            new_locs = new_locs.permute(0, 2, 3, 1)
+            new_locs = new_locs[..., [1, 0]]
+        elif len(shape) == 3:
+            new_locs = new_locs.permute(0, 2, 3, 4, 1)
+            new_locs = new_locs[..., [2, 1, 0]]
+
+        return F.grid_sample(src, new_locs, mode=self.mode, padding_mode="border", align_corners=False)
 
 
 class InputPadder:
@@ -139,10 +238,17 @@ class Tracker(nn.Module):
         self.flowkey = []
         self.project_weight = []
         self.filter_weight = []
-        self.project[self.flowkey[i]] = nn.Conv2d(256, 96, 1, bias=False).cuda(self.device)
-        self.filter[self.flowkey[i]] = nn.Conv2d(96, 2, 3, bias=False).cuda(self.device)
+
+        for i in range(10):
+            self.flowkey.append(str(i))
+        for i in range(len(self.flowkey)):
+            self.project[self.flowkey[i]] = nn.Conv2d(256, 96, 1, bias=False).cuda(self.device)
+            self.project_weight.append(self.project[self.flowkey[i]].weight.data.clone())
+            self.filter[self.flowkey[i]] = nn.Conv2d(96, 2, 3, bias=False).cuda(self.device)
+            self.filter_weight.append(self.filter[self.flowkey[i]].weight.data.clone())
 
         dset_fps = AverageMeter()
+
         print('Evaluating', dataset.name)
 
         restarted = False
@@ -191,8 +297,22 @@ class Tracker(nn.Module):
         self.prev_outpout = []
 
         N = 0
-
         object_ids = torch.tensor([0] + sequence.obj_ids, dtype=torch.uint8, device=self.device)  # Mask -> labels LUT
+
+        im_l = []
+        lb_l = []
+        if speedrun:
+            image, labels, obj_ids = sequence[0]
+            image = image.to(self.device)
+            labels = labels.to(self.device)
+            im_l.append(image)
+            im_l.append(image)
+            lb_l.append(labels)
+            lb_l.append(labels)
+            self.initialize(image, labels, sequence.obj_ids)  # Assume DAVIS 2016
+            self.track(im_l, lb_l)
+            torch.cuda.synchronize()
+            self.targets = dict()
 
         self.outputs = []
         t0 = time()
@@ -207,24 +327,26 @@ class Tracker(nn.Module):
                 self.initialize(image, labels, new_objects)
 
             if len(old_objects) > 0:
-
-                # FAMINet-inter
                 inter = 2
+
                 images = []
                 labels = []
                 if i >= inter - 1:
                     for res in range(inter):
-                        im, _, _ = sequence.__getitem__(i - (inter - 1 - res))
+                        im, lb, _ = sequence.__getitem__(i - (inter - 1 - res))
                         images.append(im)
+                        labels.append(lb)
                 else:
                     for res in range(i):
-                        im, _, _ = sequence.__getitem__(res)
+                        im, lb, _ = sequence.__getitem__(res)
                         images.append(im)
+                        labels.append(lb)
                     for res in range(inter - i):
-                        im, _, _ = sequence.__getitem__(i)
+                        im, lb, _ = sequence.__getitem__(i)
                         images.append(im)
+                        labels.append(lb)
 
-                self.track(images, self.current_masks)
+                self.track(images, labels)
 
                 masks = self.current_masks
                 if len(sequence.obj_ids) == 1:
@@ -249,8 +371,6 @@ class Tracker(nn.Module):
         T = time() - t0
         fps = N / T
 
-        # print(self.psnr / self.count)
-
         return self.outputs, fps
 
     def initialize(self, image, labels, new_objects):
@@ -260,7 +380,6 @@ class Tracker(nn.Module):
         for obj_id in new_objects:
 
             # Create target
-
             mask = (labels == obj_id).byte()
             target = TargetObject(obj_id=obj_id, index=len(self.targets)+1, disc_params=self.disc_params,
                                   start_frame=self.current_frame, start_mask=mask)
@@ -271,7 +390,6 @@ class Tracker(nn.Module):
             np.random.seed(0)
 
             # Augment first image and extract features
-
             im, msk = self.augment(image, mask)
             with torch.no_grad():
                 ft = self.feature_extractor(im, [target.disc_layer])
@@ -290,46 +408,19 @@ class Tracker(nn.Module):
         features_flow = []
         im_size = images[0].shape[-2:]
         warp = SpatialTransformer(images[0].shape[-2:]).cuda(images[0].device)
+        images_pad = []
         for i in range(len(images)):
             images[i] = images[i].unsqueeze(0).float()
             masks[i] = masks[i].unsqueeze(0).cuda(images[0].device)
-            # masks[i] = self.padder.pad(masks[i])[0]
             features.append(self.feature_extractor(images[i]))
-            images[i] = self.padder.pad(images[i])[0]
-            features_flow.append(self.feature_extractor(images[i]))
-
+            images_pad.append(self.padder.pad(images[i])[0])
+            features_flow.append(self.feature_extractor(images_pad[i]))
+        
         # Classify
-
         for obj_id, target in self.targets.items():
             if target.start_frame < self.current_frame:
-                # with torch.autograd.profiler.profile(enabled=True) as prof:
                 flows = []
-                # compute mask according to the segmentations
-                mask = (masks[-1].clone() == obj_id).float()
-                mask_ref = (masks[-2].clone() == obj_id).float()
-                robust_mask = torch.zeros(mask.shape).cuda(mask.device)
-                robust_mask_ref = torch.zeros(mask.shape).cuda(mask.device)
-                center = masks_to_bboxes(mask.squeeze())
-                # center = masks_to_bboxes_gauss(mask.squeeze())
-                robust_mask[:, :,
-                int(torch.round(center[1] - center[3] / 2)):int(torch.round(center[1] + center[3] / 2)),
-                int(torch.round(center[0] - center[2] / 2)):int(torch.round(center[0] + center[2] / 2))] = 1
-
-                center = masks_to_bboxes(mask_ref.squeeze())
-                robust_mask_ref[:, :,
-                int(torch.round(center[1] - center[3] / 2)):int(torch.round(center[1] + center[3] / 2)),
-                int(torch.round(center[0] - center[2] / 2)):int(torch.round(center[0] + center[2] / 2))] = 1
-
-                if torch.sum(mask) == 0:
-                    robust_mask[...] = 1
-                if torch.sum(mask_ref) == 0:
-                    robust_mask_ref[...] = 1
-
-                features_flow = []
-                features_flow.append(self.feature_extractor(images[0] * robust_mask_ref))
-                features_flow.append(self.feature_extractor(images[1] * robust_mask))
-
-                # perform Relaxed Steepest Descent to compute optical flow
+                # obj_id = 0
                 for m in self.project[self.flowkey[obj_id]].parameters():
                     m.requires_grad = True
                 for m in self.filter[self.flowkey[obj_id]].parameters():
@@ -345,73 +436,49 @@ class Tracker(nn.Module):
                     int(torch.round(center[0] - center[2] / 2)):int(torch.round(center[0] + center[2] / 2))] = 1
                     if torch.sum(mask) == 0:
                         robust_mask[...] = 1
-
-                    if torch.sum(mask) == 0: #or torch.sum(mask_ref) == 0:
-                    # if True:
+                
+                    if torch.sum(mask) == 0:
                         fmap = torch.cat((features_flow[i]['layer3'], features_flow[i - 1]['layer3']), 1)
                         flow = self.filter[self.flowkey[obj_id]](self.project[self.flowkey[obj_id]](fmap.detach()))
                         flow = F.interpolate(flow, size=im_size, mode='bilinear')
                         # robust_mask[...] = 1
                     else:
-                        for j in range(2):
+                        for j in range(4):
                             parameters = TensorList([self.project[self.flowkey[obj_id]].weight,
                                                      self.filter[self.flowkey[obj_id]].weight])
-                            # end_time = time()
                             fmap = torch.cat((features_flow[i]['layer3'], features_flow[i - 1]['layer3']), 1)
                             flow = self.filter[self.flowkey[obj_id]](
                                 self.project[self.flowkey[obj_id]](fmap.detach()))
                             flow = F.interpolate(flow, size=im_size, mode='bilinear')
                             warp_im = warp(images[i - 1] / 255., flow)
                             residuals = (images[i] / 255. - warp_im).abs() * robust_mask
-                            # whether to use SSIM loss
-                            # ssim = SSIM().cuda(images[i].device)
-                            # ssim_value = ssim(images[i] / 255., warp_im) * robust_mask
-                            # residuals = residuals.sum() * 0.15 + ssim_value.sum() * 0.8
                             residuals = residuals.sum() * 0.15 * 0.8
                             residuals = TensorList([residuals])
                             parameters.requires_grad_(True)
-                            lzy_g = TensorList(torch.autograd.grad(residuals, parameters, create_graph=True))
-                            lzy_g_2 = 0
-                            for k in range(len(lzy_g)):
-                                lzy_g_2 += (lzy_g[k] * lzy_g[k]).sum()
-                            lzy_alpha = residuals[0] / lzy_g_2 * 0.8 * 0.15
-                            # commonly used SGD algorithm
-                            # lzy_alpha = torch.tensor(5e-4).cuda(images[0].device)
-                            step = lzy_g.apply(
-                                lambda e: lzy_alpha.reshape([-1 if d == 0 else 1 for d in range(e.dim())]) * e)
-                            if not torch.isnan(lzy_alpha):
-                                self.project[self.flowkey[obj_id]].weight.data = parameters[0] - step[0]
-                                self.filter[self.flowkey[obj_id]].weight.data = parameters[1] - step[1]
-                            else:
-                                print(1)
+                            rsd_g = TensorList(torch.autograd.grad(residuals, parameters, create_graph=True))
+                            rsd_g_2 = 0
+                            for k in range(len(rsd_g)):
+                                rsd_g_2 += (rsd_g[k] * rsd_g[k]).sum()
+                            rsd_alpha = residuals[0] / rsd_g_2 * 0.8 * 0.15
+                            step = rsd_g.apply(
+                                lambda e: rsd_alpha.reshape([-1 if d == 0 else 1 for d in range(e.dim())]) * e)
+                            self.project[self.flowkey[obj_id]].weight.data = parameters[0] - step[0]
+                            self.filter[self.flowkey[obj_id]].weight.data = parameters[1] - step[1]
                     flows.append(flow)
-                # print(prof.key_averages().table(sort_by="self_cpu_time_total"))
 
                 with torch.no_grad():
                     s = []
                     for i in range(len(images)):
-                        # s.append(target.classify(features[i][target.disc_layer]))
                         if i == len(images) - 1:
                             s.append(target.classify(features[i][target.disc_layer]))
                         else:
                             s.append(target.classify_(features[i][target.disc_layer]))
-                    y, flows = self.refiner(s, features, features_flow, images, im_size, flows, padder=self.padder)
-                    # y = self.padder.unpad(y)
+                    y, flows = self.refiner(s, features, features_flow, images, im_size, flows=flows, padder=None,
+                                            mask1=masks[-1], mask2=masks[-1], current_output=self.output_mask)
                     y = torch.sigmoid(y)
                     self.current_masks[target.index] = y
 
-        # self.output_mask.append(flows[-1])
-        # images[-1] = self.padder.unpad(images[-1])
-        # images[-2] = self.padder.unpad(images[-2])
-        # warp = SpatialTransformer(images[-1].shape[-2:]).cuda(images[-1].device)
-        # image_pre = warp(images[-2] / 255., flows[-1])
-        # image_pre = (image_pre * 255.0).round()
-        # psnr = calculate_psnr(image_pre, images[-1].float())
-        # self.psnr += psnr.cpu()
-        # self.count += 1
-
         # Update
-
         for obj_id, t1 in self.targets.items():
             if t1.start_frame < self.current_frame:
                 for obj_id2, t2 in self.targets.items():
@@ -423,7 +490,6 @@ class Tracker(nn.Module):
         segs = F.softmax(p / (1 - p), dim=0)
         inds = segs.argmax(dim=0)
 
-        # self.out_buffer = segs * F.one_hot(inds, segs.shape[0]).permute(2, 0, 1)
         for i in range(self.current_masks.shape[0]):
             self.current_masks[i] = segs[i] * (inds == i).float()
 
@@ -432,63 +498,5 @@ class Tracker(nn.Module):
                 target.discriminator.update(self.current_masks[target.index].unsqueeze(0).unsqueeze(0))
 
         return self.current_masks
-
-    def dilation(self, input_):
-
-        input = input_.squeeze().unsqueeze(-1)
-        input = input.cpu().numpy()
-
-        kernel = np.ones((10, 10), np.uint8)
-        input = cv2.dilate(input, kernel, iterations=1)
-        input = torch.from_numpy(input)
-        input = input.squeeze().float().unsqueeze(0).unsqueeze(0).cuda(input_.device)
-
-        return input
-
-    def finetune(self, sequence, batchsize=9, epoch=50):
-        length = len(sequence)
-        optimizer = torch.optim.Adam(self.refiner.flow.parameters(), lr=0.00001)
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer)
-        for m in self.refiner.flow.parameters():
-            m.requires_grad = True
-        self.refiner.flow.train()
-        iters = length // batchsize
-        for j in tqdm.tqdm(range(epoch)):
-            index_list = list(range(length))
-            index_list = index_list[1:]
-            random.shuffle(index_list)
-            for iter in range(iters):
-                im1 = []
-                im2 = []
-                index = iter * batchsize
-                for i in range(batchsize):
-                    image1, _, _ = sequence.__getitem__(index_list[index + i])
-                    image2, _, _ = sequence.__getitem__(index_list[index + i] - 1)
-                    image1 = image1.unsqueeze(0).float()
-                    image2 = image2.unsqueeze(0).float()
-                    im1.append(image1)
-                    im2.append(image2)
-                im1 = torch.cat(im1, 0)
-                im2 = torch.cat(im2, 0)
-                self.padder = InputPadder(im1.shape)
-                im1, im2, = self.padder.pad(im1, im2)
-                features1 = self.feature_extractor(im1)
-                features2 = self.feature_extractor(im2)
-
-                optimizer.zero_grad()
-                fmap1 = features1['layer3']
-                fmap2 = features2['layer3']
-                flows12 = self.refiner.flow(fmap1, fmap2, im1 / 255.)
-                self.flow.cuda(fmap1.device)
-                flows_ref = self.flow(fmap1, fmap2, im1 / 255.)
-                loss = davis_loss(im1 / 255., im2 / 255., flows12, flows_ref=flows_ref)
-                loss.backward()
-                optimizer.step()
-                scheduler.step(loss.item())
-
-        for m in self.refiner.flow.parameters():
-            m.requires_grad = False
-        self.refiner.flow.eval()
-
 
 

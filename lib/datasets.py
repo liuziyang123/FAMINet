@@ -45,6 +45,7 @@ class FileSequence(Dataset):
         f = self.frame_name(item)
         obj_ids = self.start_frames.get(f, [])
 
+
         if len(obj_ids) > 0:
             lb = imread(self.anno_path / (f + ".png"))
             if self.merge_objects:
@@ -55,6 +56,8 @@ class FileSequence(Dataset):
                 suppressed_obj_ids = list(set(lb.unique().tolist()) - set([0] + obj_ids))
                 for obj_id in suppressed_obj_ids:
                     lb[lb == obj_id] = 0
+        else:
+            lb = imread(self.anno_path / (f + ".png"))
 
         return im, lb, obj_ids
 
@@ -95,10 +98,11 @@ class DAVISDataset:
             self.sequences = self.sequences[self.sequences.index(restart):]
 
         self.start_frames = dict()
-        for seq in self.sequences:
+        for seq in self.sequences:                                                              # 确定首帧中需要跟踪的目标
             f0 = "00000"  # In DAVIS, all objects appear in the first frame
             obj_ids = torch.unique(imread(self.anno_path / seq / (f0 + ".png"))).tolist()
             self.start_frames[seq] = {obj_id: f0 for obj_id in sorted(obj_ids) if obj_id != 0}
+        print('end')
 
     def __len__(self):
         return len(self.sequences)

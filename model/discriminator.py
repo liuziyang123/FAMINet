@@ -47,17 +47,14 @@ class DiscriminatorLoss(MinimizationProblem):
         s = F.interpolate(s, self.y_size, mode='bilinear', align_corners=False)
         residuals = self.w * (s - self.y)
         return TensorList([residuals, *(self.filter_regs * parameters)])
-        # return TensorList([residuals])
 
     def inference(self, parameters: TensorList, w: TensorList):
 
-        # s = F.conv2d(F.conv2d(self.x, w1[0]), w1[1], padding=1) + F.conv2d(F.conv2d(self.x, w2[0]), w2[1], padding=1)
         s = F.conv2d(self.x, w[0])
         s = F.conv2d(s, w[1], padding=1)
         s = F.interpolate(s, self.y_size, mode='bilinear', align_corners=False)
         residuals = self.w * (s - self.y)
         return TensorList([residuals, *(self.filter_regs * parameters)])
-        # return TensorList([residuals])
 
     def ip(self, a: TensorList, b: TensorList):
         return a.view(-1) @ b.view(-1)
@@ -176,7 +173,6 @@ class Discriminator(nn.Module):
         memory.initialize(x, y, pw)
 
         parameters = TensorList([self.project.weight, self.filter.weight])
-        # parameters = TensorList([self.project.weight])
         problem = DiscriminatorLoss(x=memory.samples, y=memory.labels,
                                     filter_regs=self.filter_reg, precond=self.precond, sample_weights=memory.weights,
                                     net=nn.Sequential(self.project, self.filter), pixel_weighting=memory.pixel_weights)
@@ -188,13 +184,11 @@ class Discriminator(nn.Module):
 
         x = self.project(x)  # Re-project samples with the new projection matrix
 
-        # Initialize the memory
-
+        # Initialize the memor
         memory = Memory(self.memory_size, x.shape[-3:], y.shape[-3:], self.device, self.learning_rate)
         memory.initialize(x, y, pw)
 
         # Build the update problem
-
         parameters = TensorList([self.filter.weight])
         problem = DiscriminatorLoss(x=memory.samples, y=memory.labels,
                                     filter_regs=self.filter_reg, precond=self.precond,
@@ -211,17 +205,13 @@ class Discriminator(nn.Module):
 
     def apply(self, ft):
         self.frame_num += 1
-        # self.current_sample = ft
         cft = self.project(ft)
         self.current_sample = cft
         scores = self.filter(cft)
         return scores
-
+    
     def apply_(self, ft):
-        # self.frame_num += 1
-        # self.current_sample = ft
         cft = self.project(ft)
-        # self.current_sample = cft
         scores = self.filter(cft)
         return scores
 

@@ -83,9 +83,6 @@ class GaussNewtonCG:
         self.g.requires_grad_(True)
         self.dfdxt_g = TensorList(torch.autograd.grad(self.f0, self.x, self.g, create_graph=True))   # df/dx^t @ f0, f0*g element-wise multiply, Equation(2) in the paper
 
-        # dfdx_x = torch.autograd.grad(self.dfdxt_g, self.g, self.dfdxt_g, retain_graph=True)  # ▽w1^2 + ▽w2^2
-        # dfdx_x_ = self.problem.inference(self.x, self.dfdxt_g)
-
         self.b = - self.dfdxt_g.detach()    # ▽w1, ▽w2
 
         delta_x, res = self.run_CG(num_cg_iter, eps=self.cg_eps)
@@ -158,14 +155,6 @@ class GaussNewtonCG:
 
     def A(self, x):
         dfdx_x = torch.autograd.grad(self.dfdxt_g, self.g, x, retain_graph=True)            # ▽w1^2 + ▽w2^2
-        # x1 = x.clone()
-        # x2 = x.clone()
-        # x1[0] = self.x[0]
-        # x2[1] = self.x[1]
-        # # dfdx_x_ = self.problem.inference(self.x, x1, x2)
-        # dfdx_x_ = self.problem.inference(self.x, x1) + self.problem.inference(self.x, x2)
-        # dfdx_x_[1] = self.b[0]
-        # dfdx_x_[2] = self.b[1]
         grad = TensorList(torch.autograd.grad(self.f0, self.x, dfdx_x, retain_graph=True))
         return grad
 

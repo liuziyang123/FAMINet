@@ -15,12 +15,9 @@ torch.backends.cudnn.benchmark = True
 
 from model.training_model import TrainerModel
 from model.augmenter import ImageAugmenter
-from model.feature_extractor import ResnetFeatureExtractor, ResnetFeatureExtractor_
+from model.feature_extractor import ResnetFeatureExtractor
 from model.discriminator import Discriminator
 from model.seg_network import SegNetwork
-# from model.seg_network import SegNetwork_pure
-
-from model.vos_flow import VosFlow
 
 
 class ModelParameters:
@@ -33,7 +30,6 @@ class ModelParameters:
         self.batch_size = batch_size
 
         # Model parameters
-
         self.aug_params = edict(
 
             num_aug=15,
@@ -102,8 +98,8 @@ if __name__ == '__main__':
     # os.environ["CUDA_VISIBLE_DEVICES"] = '2'
 
     paths = dict(
-        dv2017="/data2/liuziyang/frtm-vos-master/DAVIS",
-        ytvos2018="/data3/YouTubeVOS/2018",
+        dv2017="./data/DAVIS",
+        ytvos2018="./data/YouTubeVOS/2018",
         checkpoints="./checkpoints",  # Checkpoints. Session-name subdirectories will be created here.
         tensorboard="./tensorboard",  # Tensorboard logs. Session-name subdirectories will be created here.
         tmcache="./tmodels_cache_single"     # Cache of pretrained target models, requires 22 GB disk space.
@@ -112,9 +108,9 @@ if __name__ == '__main__':
     paths = {k: Path(v).expanduser().resolve() for k, v in paths.items()}
 
     args_parser = argparse.ArgumentParser(description='Train FRTM')
-    args_parser.add_argument('name', type=str, help='Name of the training session, for logging and saving checkpoints.')
-    args_parser.add_argument('--ftext', type=str, default="resnet101", choices=["resnet101", "resnet18"], help='Feature extractor')
-    args_parser.add_argument('--dset', type=str, default="all", choices=["all", "yt2018", "dv2017"],
+    args_parser.add_argument('--name', type=str, default='faminet', help='Name of the training session, for logging and saving checkpoints.')
+    args_parser.add_argument('--ftext', type=str, default="resnet18", choices=["resnet101", "resnet18"], help='Feature extractor')
+    args_parser.add_argument('--dset', type=str, default="dv2017", choices=["all", "yt2018", "dv2017"],
                              help='Training datasets. all = use all data; Both DAVIS 2017 and YouTubeVOS 2018.')
     args_parser.add_argument('--dev', type=str, default="cuda:0", help='Target device to run on, default is cuda:0.')
     args = args_parser.parse_args()
@@ -125,7 +121,7 @@ if __name__ == '__main__':
     if args.dset in ('all', 'yt2018'):
         dataset.append(('YouTubeVOSDataset', edict(dset_path=paths['ytvos2018'], epoch_samples=4000, min_seq_length=4, sample_size=4)))
 
-    params = ModelParameters(args.name, feature_extractor=args.ftext, device=args.dev, tmodel_cache_path=paths['tmcache'], batch_size=16)
+    params = ModelParameters(args.name, feature_extractor=args.ftext, device=args.dev, tmodel_cache_path=paths['tmcache'], batch_size=2)
     model = params.get_model()
     optimizer = torch.optim.Adam(model.refiner.parameters(), lr=2e-5, betas=(0.9, 0.999), weight_decay=1e-5, amsgrad=True)
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=127, gamma=0.1)

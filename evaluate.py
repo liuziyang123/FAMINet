@@ -18,12 +18,9 @@ torch.backends.cudnn.benchmark = True
 from lib.datasets import DAVISDataset, YouTubeVOSDataset
 from model.tracker import Tracker
 from model.augmenter import ImageAugmenter
-from model.feature_extractor import ResnetFeatureExtractor, ResnetFeatureExtractor_
+from model.feature_extractor import ResnetFeatureExtractor
 from model.seg_network import SegNetwork
 from lib.evaluation import evaluate_dataset
-
-from model.vos_flow import VosFlow
-from collections import OrderedDict
 
 class Parameters:
 
@@ -36,7 +33,6 @@ class Parameters:
         self.learning_rate = 0.1
 
         # Autodetect the feature extractor
-
         self.in_channels = weights['refiner.TSE.layer4.reduce.0.weight'].shape[1]
         if self.in_channels == 1024:
             self.feature_extractor = "resnet101"
@@ -98,7 +94,6 @@ class Parameters:
         augmenter = ImageAugmenter(self.aug_params)
         extractor = ResnetFeatureExtractor(self.feature_extractor).to(self.device)
         extractor_flow = ResnetFeatureExtractor('resnet18').to(self.device)
-        # extractor = ResnetFeatureExtractor_().to(self.device)
         self.disc_params.in_channels = extractor.get_out_channels()[self.disc_params.layer]
 
         p = self.refnet_params
@@ -106,6 +101,7 @@ class Parameters:
         refiner = SegNetwork(1, p.nchannels, refinement_layers_channels, p.use_batch_norm)
 
         mdl = Tracker(augmenter, extractor, extractor_flow, self.disc_params, refiner, self.device)
+        mdl.load_state_dict(self.weights, strict=True)
         mdl.to(self.device)
 
         return mdl
@@ -113,30 +109,30 @@ class Parameters:
 
 if __name__ == '__main__':
 
+    # Edit these paths for your local setup
+    # os.environ['CUDA_VISIBLE_DEVICES'] = '0'
+
     paths = dict(
         models=Path(__file__).parent,  #/ "weights",  # The .pth files should be here
-        davis="./DAVIS",  # DAVIS dataset root
-        # davis="/data2/liuziyang/test/DAVIS",  # DAVIS dataset root
-        yt2018="/data3/YouTubeVOS/2018",  # YouTubeVOS 2018 root
+        davis="./data/DAVIS",  # DAVIS dataset root
+        yt2018="./data/YouTubeVOS/2018",  # YouTubeVOS 2018 root
         output="./results",  # Output path
     )
 
     datasets = dict(dv2016val=(DAVISDataset, dict(path=paths['davis'], year='2016', split='val')),
                     dv2017val=(DAVISDataset, dict(path=paths['davis'], year='2017', split='val')),
-                    # dv2017val=(DAVISDataset, dict(path=paths['davis'], year='2017', split='test-dev')),
-                    yt2018jjval=(YouTubeVOSDataset, dict(path=paths['yt2018'], year='2018', split='jjval_all_frames')),
-                    yt2018val=(YouTubeVOSDataset, dict(path=paths['yt2018'], year='2018', split='valid_all_frames')))
+                    yt2018val=(YouTubeVOSDataset, dict(path=paths['yt2018'], year='2018', split='valid_all_frames')),
+                    )
 
     args_parser = argparse.ArgumentParser(description='Evaluate FRTM on a validation dataset')
-    args_parser.add_argument('--model', type=str, help='name of model weights file', required=True)
-    args_parser.add_argument('--dset', type=str, required=True, choices=datasets.keys(), help='Dataset name.')
-    args_parser.add_argument('--dev', type=str, default="cuda:4", help='Target device to run on.')
+    args_parser.add_argument('--model', type=str, default='ckpts/FAMINet-2F.pth', help='name of model weights file', required=False)
+    args_parser.add_argument('--dset', type=str, default='dv2017val', choices=datasets.keys(), help='Dataset name.')
+    args_parser.add_argument('--dev', type=str, default="cuda:0", help='Target device to run on.')
     args_parser.add_argument('--fast', action='store_true', default=False, help='Whether to use fewer optimizer steps.')
 
     args = args_parser.parse_args()
 
     # Setup
-
     model_path = Path(paths['models']).expanduser().resolve() / args.model
     if not model_path.exists():
         print("Model file '%s' not found." % model_path)
@@ -151,7 +147,6 @@ if __name__ == '__main__':
     out_path.mkdir(exist_ok=True, parents=True)
 
     # Run the tracker and evaluate the results
-
     p = Parameters(weights, device=args.dev)
     tracker = p.get_model()
     tracker.run_dataset(dset, out_path, speedrun=args.dset == 'dv2016val')
